@@ -29,11 +29,14 @@ class BPRLoss:
         self.lr = config['lr']
         self.opt = optim.Adam(recmodel.parameters(), lr=self.lr)
 
+        self.ssl_reg=config['ssl_reg']
 
-    def stageOne(self, users, posItem, negItem,posAuthor,negAuthor,users2, posAuthor2, negAuthor2):
-        loss, reg_loss = self.model.bpr_loss(users, posItem, negItem,posAuthor, negAuthor,users2, posAuthor2, negAuthor2)
-        reg_loss = reg_loss*self.weight_decay
-        loss = loss + reg_loss
+
+    def stageOne(self, users, posItem, negItem,posAuthor,negAuthor,users2, posAuthor2, negAuthor2,subGraph):
+        bpr_loss, reg_loss,infonce_loss = self.model.bpr_loss(users, posItem, negItem,posAuthor, negAuthor,users2, posAuthor2, negAuthor2,subGraph)
+
+        loss = bpr_loss + self.ssl_reg * infonce_loss + self.weight_decay * reg_loss
+
 
         self.opt.zero_grad()
         loss.backward()

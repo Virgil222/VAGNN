@@ -51,6 +51,7 @@ def BPR_train_original(dataset, recommend_model, loss_class, epoch, neg_k):
     train_loader=utils.minibatch(users,posItems,negItems,posAuthors,negAuthors,batch_size=world.config['bpr_batch_size'])
     train_loader2=utils.minibatch(users2,posAuthors2,negAuthors2,batch_size=world.config['bpr_batch_size'])
     #for batch_i,data in enumerate(utils.minibatch(users,posItems,negItems,batch_size=world.config['bpr_batch_size'])):
+    subGraph = dataset.getSubGraph()
     for batch_i, data in enumerate(zip(train_loader, cycle(train_loader2))):
         batch_users, batch_posItem, batch_negItem,batch_posAuthor,batch_negAuthor = data[0][0], data[0][1], data[0][2], data[0][3], data[0][4]
         batch_users2, batch_posAuthor2,batch_negAuthor2 = data[1][0], data[1][1], data[1][2]
@@ -65,7 +66,7 @@ def BPR_train_original(dataset, recommend_model, loss_class, epoch, neg_k):
         batch_posAuthor2 = batch_posAuthor2.to(world.device)
         batch_negAuthor2 = batch_negAuthor2.to(world.device)
 
-        cri = bpr.stageOne(batch_users, batch_posItem, batch_negItem, batch_posAuthor, batch_negAuthor, batch_users2,batch_posAuthor2,batch_negAuthor2)
+        cri = bpr.stageOne(batch_users, batch_posItem, batch_negItem, batch_posAuthor, batch_negAuthor, batch_users2,batch_posAuthor2,batch_negAuthor2,subGraph)
         aver_loss += cri
 
     aver_loss = aver_loss / total_batch

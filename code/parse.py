@@ -24,11 +24,7 @@ def parse_args():
                         help="using the dropout or not")
     parser.add_argument('--mess_dropout', type=int, default=0.2,
                         help="using the dropout or not")
-    parser.add_argument('--keepprob', type=float,default=0.6,
-                        help="the batch size for bpr loss training procedure")
-    parser.add_argument('--a_fold', type=int,default=100,
-                        help="the fold num used to split large adj matrix, like gowalla")
-    parser.add_argument('--testbatch', type=int,default=100,
+    parser.add_argument('--testbatch', type=int,default=128,
                         help="the batch size of users for testing")
     parser.add_argument('--dataset', type=str,default='tiktok',
                         help="available datasets: [wechat, tiktok, takatak]")
@@ -44,11 +40,15 @@ def parse_args():
     parser.add_argument('--seed', type=int, default=2022, help='random seed')
     parser.add_argument('--model', type=str, default='lgn', help='rec-model, support [mf, lgn]')
 
-    parser.add_argument('--aug_type', type=str, default='ED',
+    parser.add_argument('--aug_type', type=str, default='rw',
                         help='data augmentation type --- ND: Node Dropout; ED: Edge Dropout; RW: Random Walk')
-    parser.add_argument('--ssl_reg', type=int, default=0.1, help='')
+    parser.add_argument('--ssl_reg', type=int, default=0.7, help='')
     parser.add_argument('--ssl_ratio', type=int, default=0.1, help='')
-    parser.add_argument('--ssl_temp', type=int, default=0.2, help='')
+    parser.add_argument('--ssl_temp', type=int, default=0.3, help='')
+
+    parser.add_argument('--gpu_id', type=str, default='0', help='')
+
+    parser.add_argument('--neg', type=int, default=1, help='')
 
     return parser.parse_args()
 

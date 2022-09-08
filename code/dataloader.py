@@ -16,7 +16,9 @@ from scipy.sparse import csr_matrix
 import scipy.sparse as sp
 import world
 from world import cprint
-from time import time
+from reckit import randint_choice
+
+
 
 
 class BasicDataset(Dataset):
@@ -86,6 +88,9 @@ class BasicDataset(Dataset):
         """
         raise NotImplementedError
 
+    def getSubGraph(self):
+        raise NotImplementedError
+
 
 class Loader(BasicDataset):
     """
@@ -97,8 +102,6 @@ class Loader(BasicDataset):
     def __init__(self, config=world.config, path="../data/gowalla"):
         # train or test
         cprint(f'loading [{path}]')
-        self.split = config['A_split']
-        self.folds = config['A_n_fold']
         self.mode_dict = {'train': 0, "test": 1, "valid": 2}
         self.mode = self.mode_dict['train']
         self.n_user = 0
@@ -121,6 +124,10 @@ class Loader(BasicDataset):
         self.traindataSize2 = 0
         self.validDataSize = 0
         self.testDataSize = 0
+
+        self.ssl_aug_type= config['aug_type']
+        self.ssl_ratio=config['ssl_ratio']
+        self.n_layers = config['lightGCN_n_layers']
 
         with open(size_file) as f:
             self.n_user, self.m_item, self.n_author = [int(s) for s in f.readline().split('\t')][:3]
@@ -415,9 +422,87 @@ class Loader(BasicDataset):
             ua_graph2 = self._convert_sp_mat_to_sp_tensor(norm_adj)
             ua_graph2 = ua_graph2.coalesce().to(world.device)
 
-        self.Graph=[ui_graph,ua_graph,ua_graph2,pool1_graph,pool2_graph,pool3_graph]
+
+
+        self.Graph=[ui_graph,ua_graph,pool1_graph,pool2_graph,pool3_graph]
 
         return self.Graph
+
+    def getSubGraph(self):
+        if self.ssl_aug_type in ['nd', 'ed']:
+            ui_sub_graph1 = self.create_adj_mat('ui_graph',is_subgraph=True, aug_type=self.ssl_aug_type)
+            ui_sub_graph1 = self._convert_sp_mat_to_sp_tensor(ui_sub_graph1).coalesce().to(world.device)
+            ui_sub_graph2 = self.create_adj_mat('ui_graph',is_subgraph=True, aug_type=self.ssl_aug_type)
+            ui_sub_graph2 = self._convert_sp_mat_to_sp_tensor(ui_sub_graph2).coalesce().to(world.device)
+
+            ua_sub_graph1 = self.create_adj_mat('ua_graph', is_subgraph=True, aug_type=self.ssl_aug_type)
+            ua_sub_graph1 = self._convert_sp_mat_to_sp_tensor(ua_sub_graph1).coalesce().to(world.device)
+            ua_sub_graph2 = self.create_adj_mat('ua_graph', is_subgraph=True, aug_type=self.ssl_aug_type)
+            ua_sub_graph2 = self._convert_sp_mat_to_sp_tensor(ua_sub_graph2).coalesce().to(world.device)
+        else:
+            ui_sub_graph1, ui_sub_graph2,ua_sub_graph1,ua_sub_graph2 = [], [],[], []
+            for _ in range(0, self.n_layers):
+                tmp_graph = self.create_adj_mat('ui_graph',is_subgraph=True, aug_type=self.ssl_aug_type)
+                ui_sub_graph1.append(self._convert_sp_mat_to_sp_tensor(tmp_graph).coalesce().to(world.device))
+                tmp_graph = self.create_adj_mat('ui_graph',is_subgraph=True, aug_type=self.ssl_aug_type)
+                ui_sub_graph2.append(self._convert_sp_mat_to_sp_tensor(tmp_graph).coalesce().to(world.device))
+
+                tmp_graph = self.create_adj_mat('ua_graph', is_subgraph=True, aug_type=self.ssl_aug_type)
+                ua_sub_graph1.append(self._convert_sp_mat_to_sp_tensor(tmp_graph).coalesce().to(world.device))
+                tmp_graph = self.create_adj_mat('ua_graph', is_subgraph=True, aug_type=self.ssl_aug_type)
+                ua_sub_graph2.append(self._convert_sp_mat_to_sp_tensor(tmp_graph).coalesce().to(world.device))
+        return [ui_sub_graph1,ui_sub_graph2,ua_sub_graph1,ua_sub_graph2]
+
+
+    def create_adj_mat(self,str, is_subgraph=False, aug_type='ed'):
+        if str=='ui_graph':
+            n_nodes = self.n_user + self.m_item
+            n_user,n_item=self.n_user,self.m_item
+            users_np, items_np = self.trainUser, self.trainItem
+        else:
+            n_nodes = self.n_user + self.n_author
+            n_user, n_item = self.n_user, self.n_author
+            users_np, items_np = self.trainUser, self.trainAuthor
+
+
+        if is_subgraph and self.ssl_ratio > 0:
+            if aug_type == 'nd':
+                drop_user_idx = randint_choice(n_user, size=int(n_user * self.ssl_ratio), replace=False)
+                drop_item_idx = randint_choice(n_item, size=int(n_item * self.ssl_ratio), replace=False)
+                indicator_user = np.ones(n_user, dtype=np.float32)
+                indicator_item = np.ones(n_item, dtype=np.float32)
+                indicator_user[drop_user_idx] = 0.
+                indicator_item[drop_item_idx] = 0.
+                diag_indicator_user = sp.diags(indicator_user)
+                diag_indicator_item = sp.diags(indicator_item)
+                R = sp.csr_matrix(
+                    (np.ones_like(users_np, dtype=np.float32), (users_np, items_np)),
+                    shape=(n_user, n_item))
+                R_prime = diag_indicator_user.dot(R).dot(diag_indicator_item)
+                (user_np_keep, item_np_keep) = R_prime.nonzero()
+                ratings_keep = R_prime.data
+                tmp_adj = sp.csr_matrix((ratings_keep, (user_np_keep, item_np_keep + n_user)),
+                                        shape=(n_nodes, n_nodes))
+            if aug_type in ['ed', 'rw']:
+                keep_idx = randint_choice(len(users_np), size=int(len(users_np) * (1 - self.ssl_ratio)), replace=False)
+                user_np = np.array(users_np)[keep_idx]
+                item_np = np.array(items_np)[keep_idx]
+                ratings = np.ones_like(user_np, dtype=np.float32)
+                tmp_adj = sp.csr_matrix((ratings, (user_np, item_np + n_user)), shape=(n_nodes, n_nodes))
+        else:
+            ratings = np.ones_like(users_np, dtype=np.float32)
+            tmp_adj = sp.csr_matrix((ratings, (users_np, items_np + n_user)), shape=(n_nodes, n_nodes))
+        adj_mat = tmp_adj + tmp_adj.T
+
+        # normalize adjcency matrix
+        rowsum = np.array(adj_mat.sum(1))
+        d_inv = np.power(rowsum, -0.5).flatten()
+        d_inv[np.isinf(d_inv)] = 0.
+        d_mat_inv = sp.diags(d_inv)
+        norm_adj_tmp = d_mat_inv.dot(adj_mat)
+        adj_matrix = norm_adj_tmp.dot(d_mat_inv)
+
+        return adj_matrix
 
 
 

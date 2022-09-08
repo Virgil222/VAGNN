@@ -19,21 +19,18 @@ bpr = utils.BPRLoss(Recmodel, world.config)
 weight_file = utils.getFileName()
 #Recmodel.load_state_dict(torch.load('checkpoints/lgn-tiktok_feed-2-6441.model'))
 
-Neg_k = 1
-
-
 
 best_hr, best_ndcg = 0, 0
 best_model = Recmodel
 best_epoch = 0
 count, epoch = 0, 0
 
-while count < 8:
+while count < 10:
     start = time.time()
-    output_information = Procedure.BPR_train_original(dataset, Recmodel, bpr, epoch, neg_k=Neg_k)
+    output_information = Procedure.BPR_train_original(dataset, Recmodel, bpr, epoch, neg_k=world.config['neg'])
     cprint("[valid]")
     res = Procedure.Test(dataset, Recmodel, 'valid', world.config['multicore'])
-    hr1, ndcg1 = res['recall'][0], res['ndcg'][0]
+    hr1, ndcg1 = res['recall'][2], res['ndcg'][2]
     hr2, ndcg2 = res['recall'][2], res['ndcg'][2]
     print(f'EPOCH[{epoch + 1}/{world.TRAIN_epochs}] {output_information}')
     if hr1 > best_hr :
