@@ -1,65 +1,29 @@
-'''
-Created on Mar 1, 2020
-Pytorch Implementation of LightGCN in
-Xiangnan He et al. LightGCN: Simplifying and Powering Graph Convolution Network for Recommendation
-
-@author: Jianbai Ye (gusye@mail.ustc.edu.cn)
-'''
 import world
 import torch
-from torch import nn, optim
 import numpy as np
-from torch import log
 from dataloader import BasicDataset
 from time import time
-from model import LightGCN
-from model import PairWiseModel
-from sklearn.metrics import roc_auc_score
-import random
+
 import os
+from datetime import datetime
 sample_ext = False
 
-
-class BPRLoss:
-    def __init__(self,
-                 recmodel : PairWiseModel,
-                 config : dict):
-        self.model = recmodel
-        self.weight_decay = config['decay']
-        self.lr = config['lr']
-        self.opt = optim.Adam(recmodel.parameters(), lr=self.lr)
-
-        self.ssl_reg=config['ssl_reg']
+def UniformSample_original(dataset, neg_k):
+    dataset: BasicDataset
+    #allPos = dataset.allPos
+    #start = time()
+    S, S2 = UniformSample_original_python(dataset, neg_k)
+    return S, S2
 
 
-    def stageOne(self, users, posItem, negItem,posAuthor,negAuthor,users2, posAuthor2, negAuthor2,subGraph):
-        bpr_loss, reg_loss,infonce_loss = self.model.bpr_loss(users, posItem, negItem,posAuthor, negAuthor,users2, posAuthor2, negAuthor2,subGraph)
-
-        loss = bpr_loss + self.ssl_reg * infonce_loss + self.weight_decay * reg_loss
-
-
-        self.opt.zero_grad()
-        loss.backward()
-        self.opt.step()
-
-        return loss.cpu().item()
-
-
-def UniformSample_original(dataset, neg_k ):
-    dataset : BasicDataset
-    allPos = dataset.allPos
-    start = time()
-    S,S2 = UniformSample_original_python(dataset,neg_k)
-    return S,S2
-'''
-def UniformSample_original_python(dataset,neg_k):
+def UniformSample_original_python(dataset, neg_k):
     """
-    the original impliment of BPR Sampling in LightGCN
+    the original impliment of BPR Sampling in VAGNN
     :return:
         np.array
     """
     total_start = time()
-    dataset : BasicDataset
+    dataset: BasicDataset
     user_num = dataset.trainDataSize
     user_num2 = dataset.trainDataSize2
     users = np.random.randint(0, dataset.n_users, user_num)
@@ -67,34 +31,31 @@ def UniformSample_original_python(dataset,neg_k):
     allPos = dataset.allPos
     allPos2 = dataset.allPos2
     S = []
-    S2= []
-
+    S2 = []
 
     # u-i sample
     for i, user in enumerate(users):
 
-        posItemForUser = allPos[0][user]
-        posAuthorForUser = allPos[1][user]
+        posVideoForUser = allPos[0][user]
+        posVloggerForUser = allPos[1][user]
 
-        if len(posItemForUser) == 0:
+        if len(posVideoForUser) == 0:
             continue
 
-        posindex = np.random.randint(0, len(posItemForUser))
-        positem = posItemForUser[posindex]
-        posauthor = dataset.author_list[positem]
+        posindex = np.random.randint(0, len(posVideoForUser))
+        posvideo = posVideoForUser[posindex]
+        posvlogger = dataset.vlogger_list[posvideo]
 
-
-        while True:
-            #negauthor = np.random.randint(0, dataset.n_authors)
-            negitem = np.random.randint(0, dataset.m_items)
-            negauthor = dataset.author_list[negitem]
-            if (negitem in posItemForUser) or (negauthor in posAuthorForUser):
-                continue
-            else:
-                break
-
-        S.append([user,positem,negitem, posauthor, negauthor])
-
+        for i in range(neg_k):
+            while True:
+                # negvlogger = np.random.randint(0, dataset.n_vloggers)
+                negvideo = np.random.randint(0, dataset.n_videos)
+                negvlogger = dataset.vlogger_list[negvideo]
+                if (negvideo in posVideoForUser) or (negvlogger in posVloggerForUser):
+                    continue
+                else:
+                    break
+            S.append([user, posvideo, negvideo, posvlogger, negvlogger])
 
     # u-a sample
     for i, user in enumerate(users2):
@@ -104,80 +65,18 @@ def UniformSample_original_python(dataset,neg_k):
             continue
 
         posindex = np.random.randint(0, len(posForUser))
-        posauthor = posForUser[posindex]
-        while True:
-            negauthor = np.random.randint(0, dataset.n_authors)
-            if negauthor in posForUser:
-                continue
-            else:
-                break
-        S2.append([user, posauthor, negauthor])
-
-    return np.array(S),np.array(S2)
-'''
-
-def UniformSample_original_python(dataset,neg_k):
-    """
-    the original impliment of BPR Sampling in LightGCN
-    :return:
-        np.array
-    """
-    total_start = time()
-    dataset : BasicDataset
-    user_num = dataset.trainDataSize
-    user_num2 = dataset.trainDataSize2
-    users = np.random.randint(0, dataset.n_users, user_num)
-    users2 = np.random.randint(0, dataset.n_users, user_num2)
-    allPos = dataset.allPos
-    allPos2 = dataset.allPos2
-    S = []
-    S2= []
-
-
-    # u-i sample
-    for i, user in enumerate(users):
-
-        posItemForUser = allPos[0][user]
-        posAuthorForUser = allPos[1][user]
-
-        if len(posItemForUser) == 0:
-            continue
-
-        posindex = np.random.randint(0, len(posItemForUser))
-        positem = posItemForUser[posindex]
-        posauthor = dataset.author_list[positem]
-
+        posvlogger = posForUser[posindex]
         for i in range(neg_k):
             while True:
-                #negauthor = np.random.randint(0, dataset.n_authors)
-                negitem = np.random.randint(0, dataset.m_items)
-                negauthor = dataset.author_list[negitem]
-                if (negitem in posItemForUser) or (negauthor in posAuthorForUser):
+                negvlogger = np.random.randint(0, dataset.n_vloggers)
+                if negvlogger in posForUser:
                     continue
                 else:
                     break
-            S.append([user,positem,negitem, posauthor, negauthor])
+            S2.append([user, posvlogger, negvlogger])
 
+    return np.array(S), np.array(S2)
 
-    # u-a sample
-    for i, user in enumerate(users2):
-
-        posForUser = allPos2[user]
-        if len(posForUser) == 0:
-            continue
-
-        posindex = np.random.randint(0, len(posForUser))
-        posauthor = posForUser[posindex]
-        for i in range(neg_k):
-            while True:
-                negauthor = np.random.randint(0, dataset.n_authors)
-                if negauthor in posForUser:
-                    continue
-                else:
-                    break
-            S2.append([user, posauthor, negauthor])
-
-    return np.array(S),np.array(S2)
 
 # ===================end samplers==========================
 # =====================utils====================================
@@ -189,15 +88,13 @@ def set_seed(seed):
         torch.cuda.manual_seed_all(seed)
     torch.manual_seed(seed)
 
+
 def getFileName():
-    if world.model_name == 'mf':
-        file = f"mf-{world.dataset}-{world.config['latent_dim_rec']}.pth.tar"
-    elif world.model_name == 'lgn':
-        file = f"lgn-{world.dataset}-{world.config['lightGCN_n_layers']}-{world.config['latent_dim_rec']}"
-    return os.path.join(world.FILE_PATH,file)
+    file = f"lgn-{world.dataset}-{world.config['VAGNN_n_layers']}-{world.config['vlogger_reg']}-{world.config['cl_reg']}-{world.config['cl_temp']}-{world.config['latent_dim_rec']}"+datetime.fromtimestamp(time()).strftime('%m%d%H%M')
+    return os.path.join(world.FILE_PATH, file)
+
 
 def minibatch(*tensors, **kwargs):
-
     batch_size = kwargs.get('batch_size', world.config['bpr_batch_size'])
 
     if len(tensors) == 1:
@@ -210,7 +107,6 @@ def minibatch(*tensors, **kwargs):
 
 
 def shuffle(*arrays, **kwargs):
-
     require_indices = kwargs.get('indices', False)
 
     if len(set(len(x) for x in arrays)) != 1:
@@ -276,7 +172,7 @@ class timer:
                 kwargs['name']] if timer.NAMED_TAPE.get(kwargs['name']) else 0.
             self.named = kwargs['name']
             if kwargs.get("group"):
-                #TODO: add group function
+                # TODO: add group function
                 pass
         else:
             self.named = False
@@ -297,15 +193,15 @@ class timer:
 # =========================================================
 def RecallPrecision_ATk(test_data, r, k):
     """
-    test_data should be a list? cause users may have different amount of pos items. shape (test_batch, k)
+    test_data should be a list? cause users may have different amount of pos videos. shape (test_batch, k)
     pred_data : shape (test_batch, k) NOTE: pred_data should be pre-sorted
     k : top-k
     """
     right_pred = r[:, :k].sum(1)
     precis_n = k
     recall_n = np.array([len(test_data[i]) for i in range(len(test_data))])
-    recall = np.sum(right_pred/recall_n)
-    precis = np.sum(right_pred)/precis_n
+    recall = np.sum(right_pred / recall_n)
+    precis = np.sum(right_pred) / precis_n
     return {'recall': recall, 'precision': precis}
 
 
@@ -314,12 +210,13 @@ def MRRatK_r(r, k):
     Mean Reciprocal Rank
     """
     pred_data = r[:, :k]
-    scores = np.log2(1./np.arange(1, k+1))
-    pred_data = pred_data/scores
+    scores = np.log2(1. / np.arange(1, k + 1))
+    pred_data = pred_data / scores
     pred_data = pred_data.sum(1)
     return np.sum(pred_data)
 
-def NDCGatK_r(test_data,r,k):
+
+def NDCGatK_r(test_data, r, k):
     """
     Normalized Discounted Cumulative Gain
     rel_i = 1 or 0, so 2^{rel_i} - 1 = 1 or 0
@@ -328,28 +225,20 @@ def NDCGatK_r(test_data,r,k):
     pred_data = r[:, :k]
 
     test_matrix = np.zeros((len(pred_data), k))
-    for i, items in enumerate(test_data):
-        length = k if k <= len(items) else len(items)
+    for i, videos in enumerate(test_data):
+        length = k if k <= len(videos) else len(videos)
         test_matrix[i, :length] = 1
     max_r = test_matrix
-    idcg = np.sum(max_r * 1./np.log2(np.arange(2, k + 2)), axis=1)
-    dcg = pred_data*(1./np.log2(np.arange(2, k + 2)))
+    idcg = np.sum(max_r * 1. / np.log2(np.arange(2, k + 2)), axis=1)
+    dcg = pred_data * (1. / np.log2(np.arange(2, k + 2)))
     dcg = np.sum(dcg, axis=1)
     idcg[idcg == 0.] = 1.
-    ndcg = dcg/idcg
+    ndcg = dcg / idcg
     ndcg[np.isnan(ndcg)] = 0.
     return np.sum(ndcg)
 
-def AUC(all_item_scores, dataset, test_data):
-    """
-        design for a single user
-    """
-    dataset : BasicDataset
-    r_all = np.zeros((dataset.m_items, ))
-    r_all[test_data] = 1
-    r = r_all[all_item_scores >= 0]
-    test_item_scores = all_item_scores[all_item_scores >= 0]
-    return roc_auc_score(r, test_item_scores)
+
+
 
 def getLabel(test_data, pred_data):
     r = []

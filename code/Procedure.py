@@ -1,84 +1,84 @@
-'''
-Created on Mar 1, 2020
-Pytorch Implementation of LightGCN in
-Xiangnan He et al. LightGCN: Simplifying and Powering Graph Convolution Network for Recommendation
-@author: Jianbai Ye (gusye@mail.ustc.edu.cn)
-
-Design training and test process
-'''
 import world
 import numpy as np
 import torch
 import utils
-import dataloader
-from pprint import pprint
 from utils import timer
-from time import time
-from tqdm import tqdm
 import model
 import multiprocessing
-from sklearn.metrics import roc_auc_score
 from itertools import cycle
-from torch.utils.data import DataLoader
+from model import VAGNN
+from torch import nn, optim
 CORES = multiprocessing.cpu_count() // 2
 
 
-def BPR_train_original(dataset, recommend_model, loss_class, epoch, neg_k):
-    Recmodel = recommend_model
-    Recmodel.train()
-    bpr: utils.BPRLoss = loss_class
+class Procedure:
+    def __init__(self,
+                 recmodel: VAGNN,
+                 config: dict):
+        self.model = recmodel
+        self.weight_decay = config['decay']
+        self.lr = config['lr']
+        self.opt = optim.Adam(recmodel.parameters(), lr=self.lr)
+        self.cl_reg = config['cl_reg']
 
-    with timer(name="Sample"):
-        S, S2 = utils.UniformSample_original(dataset,neg_k)
-    users = torch.Tensor(S[:, 0]).long()
-    posItems = torch.Tensor(S[:, 1]).long()
-    negItems = torch.Tensor(S[:, 2]).long()
-    posAuthors = torch.Tensor(S[:, 3]).long()
-    negAuthors = torch.Tensor(S[:, 4]).long()
+    def BPR_train_original(self,dataset, recommend_model, neg_k):
+        Recmodel = recommend_model
+        Recmodel.train()
 
-    users2 = torch.Tensor(S2[:, 0]).long()
-    posAuthors2 = torch.Tensor(S2[:, 1]).long()
-    negAuthors2 = torch.Tensor(S2[:, 2]).long()
+        with timer(name="Sample"):
+            S, S2 = utils.UniformSample_original(dataset,neg_k)
+        users = torch.Tensor(S[:, 0]).long()
+        posVideos = torch.Tensor(S[:, 1]).long()
+        negVideos = torch.Tensor(S[:, 2]).long()
+        posVloggers = torch.Tensor(S[:, 3]).long()
+        negVloggers = torch.Tensor(S[:, 4]).long()
 
-    users, posItems, negItems,posAuthors,negAuthors = utils.shuffle(users, posItems, negItems,posAuthors,negAuthors)
-    users2, posAuthors2, negAuthors2 = utils.shuffle(users2, posAuthors2, negAuthors2)
-    #train_loader = DataLoader(S, world.config['bpr_batch_size'], True, num_workers=8, pin_memory=True, drop_last=True)
-    #train_loader2 = DataLoader(S2, world.config['bpr_batch_size'], True, num_workers=8, pin_memory=True, drop_last=True)
+        users2 = torch.Tensor(S2[:, 0]).long()
+        posVloggers2 = torch.Tensor(S2[:, 1]).long()
+        negVloggers2 = torch.Tensor(S2[:, 2]).long()
 
-    total_batch = len(users) // world.config['bpr_batch_size'] + 1
-    aver_loss = 0.
+        users, posVideos, negVideos,posVloggers,negVloggers = utils.shuffle(users, posVideos, negVideos,posVloggers,negVloggers)
+        users2, posVloggers2, negVloggers2 = utils.shuffle(users2, posVloggers2, negVloggers2)
+        #train_loader = DataLoader(S, world.config['bpr_batch_size'], True, num_workers=8, pin_memory=True, drop_last=True)
+        #train_loader2 = DataLoader(S2, world.config['bpr_batch_size'], True, num_workers=8, pin_memory=True, drop_last=True)
 
-    train_loader=utils.minibatch(users,posItems,negItems,posAuthors,negAuthors,batch_size=world.config['bpr_batch_size'])
-    train_loader2=utils.minibatch(users2,posAuthors2,negAuthors2,batch_size=world.config['bpr_batch_size'])
-    #for batch_i,data in enumerate(utils.minibatch(users,posItems,negItems,batch_size=world.config['bpr_batch_size'])):
-    subGraph = dataset.getSubGraph()
-    for batch_i, data in enumerate(zip(train_loader, cycle(train_loader2))):
-        batch_users, batch_posItem, batch_negItem,batch_posAuthor,batch_negAuthor = data[0][0], data[0][1], data[0][2], data[0][3], data[0][4]
-        batch_users2, batch_posAuthor2,batch_negAuthor2 = data[1][0], data[1][1], data[1][2]
+        total_batch = len(users) // world.config['bpr_batch_size'] + 1
+        aver_loss = 0.
 
-        batch_users = batch_users.to(world.device)
-        batch_posItem = batch_posItem.to(world.device)
-        batch_negItem = batch_negItem.to(world.device)
-        batch_posAuthor = batch_posAuthor.to(world.device)
-        batch_negAuthor = batch_negAuthor.to(world.device)
+        train_loader=utils.minibatch(users,posVideos,negVideos,posVloggers,negVloggers,batch_size=world.config['bpr_batch_size'])
+        train_loader2=utils.minibatch(users2,posVloggers2,negVloggers2,batch_size=world.config['bpr_batch_size'])
 
-        batch_users2 = batch_users2.to(world.device)
-        batch_posAuthor2 = batch_posAuthor2.to(world.device)
-        batch_negAuthor2 = batch_negAuthor2.to(world.device)
+        for batch_i, data in enumerate(zip(train_loader, cycle(train_loader2))):
+            batch_users, batch_posVideo, batch_negVideo,batch_posVlogger,batch_negVlogger = data[0][0], data[0][1], data[0][2], data[0][3], data[0][4]
+            batch_users2, batch_posVlogger2,batch_negVlogger2 = data[1][0], data[1][1], data[1][2]
 
-        cri = bpr.stageOne(batch_users, batch_posItem, batch_negItem, batch_posAuthor, batch_negAuthor, batch_users2,batch_posAuthor2,batch_negAuthor2,subGraph)
-        aver_loss += cri
+            batch_users = batch_users.to(world.device)
+            batch_posVideo = batch_posVideo.to(world.device)
+            batch_negVideo = batch_negVideo.to(world.device)
+            batch_posVlogger = batch_posVlogger.to(world.device)
+            batch_negVlogger = batch_negVlogger.to(world.device)
 
-    aver_loss = aver_loss / total_batch
-    time_info = timer.dict()
-    timer.zero()
-    return f"loss{aver_loss:.3f}-{time_info}"
+            batch_users2 = batch_users2.to(world.device)
+            batch_posVlogger2 = batch_posVlogger2.to(world.device)
+            batch_negVlogger2 = batch_negVlogger2.to(world.device)
+
+            bpr_loss, reg_loss, cl_loss = self.model.bpr_loss(batch_users, batch_posVideo, batch_negVideo, batch_posVlogger, batch_negVlogger, batch_users2,batch_posVlogger2,batch_negVlogger2)
+            loss = bpr_loss + self.weight_decay * reg_loss+ self.cl_reg * cl_loss
+            self.opt.zero_grad()
+            loss.backward()
+            self.opt.step()
+            aver_loss += loss.cpu().item()
+
+        aver_loss = aver_loss / total_batch
+        time_info = timer.dict()
+        timer.zero()
+        return f"loss{aver_loss:.3f}-{time_info}"
 
 
 def test_one_batch(X):
-    sorted_items = X[0].numpy()
+    sorted_videos = X[0].numpy()
     groundTrue = X[1]
-    r = utils.getLabel(groundTrue, sorted_items)
+    r = utils.getLabel(groundTrue, sorted_videos)
     pre, recall, ndcg = [], [], []
     for k in world.topks:
         ret = utils.RecallPrecision_ATk(groundTrue, r, k)
@@ -97,7 +97,7 @@ def Test(dataset, Recmodel, str, multicore=0):
         testDict: dict = dataset.validDict
     else:
         testDict: dict = dataset.testDict
-    Recmodel: model.LightGCN
+    Recmodel: model.VAGNN
     # eval mode with no dropout
     Recmodel = Recmodel.eval()
     max_K = max(world.topks)
@@ -119,7 +119,7 @@ def Test(dataset, Recmodel, str, multicore=0):
         # ratings = []
         total_batch = len(users) // u_batch_size + 1
         for batch_users in utils.minibatch(users, batch_size=u_batch_size):
-            allPos = dataset.getUserPosItems(batch_users)
+            allPos = dataset.getUserPosVideos(batch_users)
             groundTrue = [testDict[u] for u in batch_users]
             batch_users_gpu = torch.Tensor(batch_users).long()
             batch_users_gpu = batch_users_gpu.to(world.device)
@@ -128,11 +128,11 @@ def Test(dataset, Recmodel, str, multicore=0):
             # rating = rating.cpu()
 
             exclude_index = []
-            exclude_items = []
-            for range_i, items in enumerate(allPos[0]):
-                exclude_index.extend([range_i] * len(items))
-                exclude_items.extend(items)
-            rating[exclude_index, exclude_items] = -(1 << 10)
+            exclude_videos = []
+            for range_i, videos in enumerate(allPos[0]):
+                exclude_index.extend([range_i] * len(videos))
+                exclude_videos.extend(videos)
+            rating[exclude_index, exclude_videos] = -(1 << 10)
 
             _, rating_K = torch.topk(rating, k=max_K)
             rating = rating.cpu().numpy()

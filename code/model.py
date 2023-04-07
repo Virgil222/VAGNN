@@ -1,18 +1,7 @@
-"""
-Created on Mar 1, 2020
-Pytorch Implementation of LightGCN in
-Xiangnan He et al. LightGCN: Simplifying and Powering Graph Convolution Network for Recommendation
-
-@author: Jianbai Ye (gusye@mail.ustc.edu.cn)
-
-Define models here
-"""
-import world
 import torch
 from dataloader import BasicDataset
 from torch import nn
 import torch.nn.functional as F
-
 
 class BasicModel(nn.Module):
     def __init__(self):
@@ -21,133 +10,105 @@ class BasicModel(nn.Module):
     def getUsersRating(self, users):
         raise NotImplementedError
 
-
 class PairWiseModel(BasicModel):
     def __init__(self):
         super(PairWiseModel, self).__init__()
 
-    def bpr_loss(self, users, posItem, negItem, posAuthor, negAuthor, users2, posAuthor2, negAuthor2):
+    def bpr_loss(self, users, posVideo, negVideo, posVlogger, negVlogger, users2, posVlogger2, negVlogger2):
         """
         Parameters:
             users: users list
-            pos: positive items for corresponding users
-            neg: negative items for corresponding users
+            pos: positive videos for corresponding users
+            neg: negative videos for corresponding users
         Return:
             (log-loss, l2-loss)
         """
         raise NotImplementedError
 
 
-class PureMF(BasicModel):
+class ProjectionHead(nn.Module):
+    def __init__(
+            self,
+            config: dict,
+    ):
+        super().__init__()
+        self.config = config
+        projection_dim = self.config['projection_dim']
+        dropout = self.config['projection_dropout']
+        embedding_dim= self.config['latent_dim_rec']
+        self.projection = nn.Linear(embedding_dim, projection_dim)
+        self.gelu = nn.GELU()
+        self.fc = nn.Linear(projection_dim, projection_dim)
+        self.dropout = nn.Dropout(dropout)
+        self.layer_norm = nn.LayerNorm(projection_dim)
+
+    def forward(self, x):
+        projected = self.projection(x)
+        x = self.gelu(projected)
+        x = self.fc(x)
+        x = self.dropout(x)
+        x = x + projected
+        x = self.layer_norm(x)
+        return x
+
+
+class VAGNN(BasicModel):
     def __init__(self,
                  config: dict,
                  dataset: BasicDataset):
-        super(PureMF, self).__init__()
-        self.num_users = dataset.n_users
-        self.num_items = dataset.m_items
-        self.latent_dim = config['latent_dim_rec']
-        self.f = nn.Sigmoid()
-        self.__init_weight()
-
-    def __init_weight(self):
-        self.embedding_user = torch.nn.Embedding(
-            num_embeddings=self.num_users, embedding_dim=self.latent_dim)
-        self.embedding_item = torch.nn.Embedding(
-            num_embeddings=self.num_items, embedding_dim=self.latent_dim)
-        print("using Normal distribution N(0,1) initialization for PureMF")
-
-    def getUsersRating(self, users):
-        users = users.long()
-        users_emb = self.embedding_user(users)
-        items_emb = self.embedding_item.weight
-        scores = torch.matmul(users_emb, items_emb.t())
-        return self.f(scores)
-
-    def bpr_loss(self, users, pos, neg, users2, pos2, neg2):
-        users_emb = self.embedding_user(users.long())
-        pos_emb = self.embedding_item(pos.long())
-        neg_emb = self.embedding_item(neg.long())
-        users_emb2 = self.embedding_user(users2.long())
-        pos_emb2 = self.embedding_author(pos2.long())
-        neg_emb2 = self.embedding_author(neg2.long())
-        pos_scores = torch.sum(users_emb * pos_emb, dim=1)
-        neg_scores = torch.sum(users_emb * neg_emb, dim=1)
-        pos_scores2 = torch.sum(users_emb2 * pos_emb2, dim=1)
-        neg_scores2 = torch.sum(users_emb2 * neg_emb2, dim=1)
-        loss = torch.mean(nn.functional.softplus(neg_scores - pos_scores)) + torch.mean(
-            nn.functional.softplus(neg_scores2 - pos_scores2))
-        reg_loss = (1 / 2) * (users_emb.norm(2).pow(2) +
-                              pos_emb.norm(2).pow(2) +
-                              neg_emb.norm(2).pow(2)) / float(len(users)) + (1 / 2) * (users_emb2.norm(2).pow(2) +
-                                                                                       pos_emb2.norm(2).pow(2) +
-                                                                                       neg_emb2.norm(2).pow(2)) / float(
-            len(users2))
-        return loss, reg_loss
-
-    def forward(self, users, items):
-        users = users.long()
-        items = items.long()
-        users_emb = self.embedding_user(users)
-        items_emb = self.embedding_item(items)
-        scores = torch.sum(users_emb * items_emb, dim=1)
-        return self.f(scores)
-
-
-class LightGCN(BasicModel):
-    def __init__(self,
-                 config: dict,
-                 dataset: BasicDataset):
-        super(LightGCN, self).__init__()
+        super(VAGNN, self).__init__()
         self.config = config
         self.dataset: dataloader.BasicDataset = dataset
         self.__init_weight()
 
     def __init_weight(self):
         self.num_users = self.dataset.n_users
-        self.num_items = self.dataset.m_items
-        self.num_authors = self.dataset.n_authors
+        self.num_videos = self.dataset.n_videos
+        self.num_vloggers = self.dataset.n_vloggers
         self.latent_dim = self.config['latent_dim_rec']
-        self.n_layers = self.config['lightGCN_n_layers']
+        self.n_layers = self.config['VAGNN_n_layers']
         self.embedding_user = torch.nn.Embedding(
             num_embeddings=self.num_users, embedding_dim=self.latent_dim)
-        self.embedding_item = torch.nn.Embedding(
-            num_embeddings=self.num_items, embedding_dim=self.latent_dim)
-        self.embedding_author = torch.nn.Embedding(
-            num_embeddings=self.num_authors, embedding_dim=self.latent_dim)
+        self.embedding_video = torch.nn.Embedding(
+            num_embeddings=self.num_videos, embedding_dim=self.latent_dim)
+        self.embedding_vlogger = torch.nn.Embedding(
+            num_embeddings=self.num_vloggers, embedding_dim=self.latent_dim)
         if self.config['pretrain'] == 0:
-            #             nn.init.xavier_uniform_(self.embedding_user.weight, gain=1)
-            #             nn.init.xavier_uniform_(self.embedding_item.weight, gain=1)
-            #             print('use xavier initilizer')
-            # random normal init seems to be a better choice when lightGCN actually don't use any non-linear activation function
+            #nn.init.xavier_uniform_(self.embedding_user.weight, gain=1)
+            #nn.init.xavier_uniform_(self.embedding_video.weight, gain=1)
+            #nn.init.xavier_uniform_(self.embedding_vlogger.weight, gain=1)
+            #print('use xavier initilizer')
+            # random normal init seems to be a better choice when VAGNN actually don't use any non-linear activation function
             nn.init.normal_(self.embedding_user.weight, std=0.1)
-            nn.init.normal_(self.embedding_item.weight, std=0.1)
-            nn.init.normal_(self.embedding_author.weight, std=0.1)
-            world.cprint('use NORMAL distribution initilizer')
+            nn.init.normal_(self.embedding_video.weight, std=0.1)
+            nn.init.normal_(self.embedding_vlogger.weight, std=0.1)
+            #world.cprint('use NORMAL distribution initilizer')
         else:
             self.embedding_user.weight.data.copy_(torch.from_numpy(self.config['user_emb']))
-            self.embedding_item.weight.data.copy_(torch.from_numpy(self.config['item_emb']))
-            self.embedding_author.weight.data.copy_(torch.from_numpy(self.config['author_emb']))
+            self.embedding_video.weight.data.copy_(torch.from_numpy(self.config['video_emb']))
+            self.embedding_vlogger.weight.data.copy_(torch.from_numpy(self.config['vlogger_emb']))
             print('use pretarined data')
         self.f = nn.Sigmoid()
         self.Graph = self.dataset.getSparseGraph()
 
-
-
-        # print("save_txt")
         self.q = torch.nn.Parameter(torch.FloatTensor(self.latent_dim, self.latent_dim), requires_grad=True)
-        self.q.data.fill_(0.25)
+        nn.init.normal_(self.q, std=0.1)
+
+        self.vlogger_reg=self.config['vlogger_reg']
 
 
+        self.cl_temp=self.config['cl_temp']
 
-
-        self.ssl_temp=self.config['ssl_temp']
-        # nn.init.xavier_normal_(self.q)
-
-
+        self.projection = ProjectionHead(self.config)
+        self.userProjection = ProjectionHead(self.config)
+        self.videoProjection = ProjectionHead(self.config)
+        self.vloggerProjection = ProjectionHead(self.config)
+        self.userProjection2 = ProjectionHead(self.config)
+        self.videoProjection2 = ProjectionHead(self.config)
+        self.vloggerProjection2 = ProjectionHead(self.config)
 
 
     def one_propagate(self, graph, A_feature, B_feature):
-
         # propagate
         features = torch.cat([A_feature, B_feature])
         all_features = [features]
@@ -156,293 +117,217 @@ class LightGCN(BasicModel):
                 all_emb = torch.sparse.mm(graph[i], features)
             else:
                 all_emb = torch.sparse.mm(graph, features)
-
             all_features.append(all_emb)
-
         all_features = torch.stack(all_features, dim=1)
         light_out = torch.mean(all_features, dim=1)
         A_feature, B_feature = torch.split(light_out, [A_feature.size()[0], B_feature.size()[0]])
-
         return A_feature, B_feature
 
     def computer(self, ui_graph, ua_graph):
-        """
-        propagate methods for lightGCN
-        """
+        #  =============================  video level propagation  =============================
 
-        #  =============================  item level propagation  =============================
-        atom_users_feature, atom_items_feature = self.one_propagate(
-            ui_graph, self.embedding_user.weight, self.embedding_item.weight)
-        atom_authors_feature = F.normalize(torch.matmul(self.Graph[2], atom_items_feature))
-        # tiktok 最佳 0.5 0.5
-        atom_items_feature = 0.5 * F.normalize(
-            torch.matmul(self.Graph[4], atom_items_feature)) + 0.5 * atom_items_feature
+        atom_users_feature, atom_videos_feature = self.one_propagate(
+            ui_graph, self.embedding_user.weight, self.embedding_video.weight)
+        atom_vloggers_feature = F.normalize(torch.matmul(self.Graph[2], atom_videos_feature))
 
-        #  ============================= author level propagation =============================
-        non_atom_users_feature, non_atom_authors_feature = self.one_propagate(
-            ua_graph, self.embedding_user.weight, self.embedding_author.weight)
-        non_atom_items_feature = F.normalize(torch.matmul(self.Graph[3], non_atom_authors_feature))
+        #  ============================= vlogger level propagation =============================
+
+        non_atom_users_feature, non_atom_vloggers_feature = self.one_propagate(
+            ua_graph, self.embedding_user.weight, self.embedding_vlogger.weight)
+
+        non_atom_videos_feature = F.normalize(torch.matmul(self.Graph[4], non_atom_users_feature))
 
         users_feature = [atom_users_feature, non_atom_users_feature]
-        authors_feature = [atom_authors_feature, non_atom_authors_feature]
-        items_feature = [atom_items_feature, non_atom_items_feature]
+        vloggers_feature = [atom_vloggers_feature, non_atom_vloggers_feature]
+        videos_feature = [atom_videos_feature, non_atom_videos_feature]
 
-        return users_feature, items_feature, authors_feature
+        return users_feature, videos_feature, vloggers_feature
+
 
     def getUsersRating(self, users):
-        all_users, all_items, all_authors = self.computer(self.Graph[0], self.Graph[1])
-        # users = [aa.tolist() for aa in users]
-        # users_emb1 = all_users[0][users.long()]
-        # users_emb2 = all_users[1][users.long()]
-        # items_emb1 = all_items[0]
-        # items_emb2 = all_items[1]
+        all_users, all_videos, all_vloggers = self.computer(self.Graph[0], self.Graph[1])
+
         users_feature_atom, users_feature_non_atom = [i[users] for i in all_users]  # batch_f
-        authors_feature_atom, authors_feature_non_atom = all_authors  # b_f
-        items_feature_atom, items_feature_non_atom = all_items  # b_f
+        vloggers_feature_atom, vloggers_feature_non_atom = all_vloggers  # b_f
+        videos_feature_atom, videos_feature_non_atom = all_videos  # b_f
 
-        authors_feature_atom = authors_feature_atom[self.dataset.author_list]
-        authors_feature_non_atom = authors_feature_non_atom[self.dataset.author_list]
+        vloggers_feature_atom = vloggers_feature_atom[self.dataset.vlogger_list]
+        vloggers_feature_non_atom = vloggers_feature_non_atom[self.dataset.vlogger_list]
 
-        ui = self.f(torch.mm(users_feature_atom, items_feature_atom.t()) \
-                    + torch.mm(users_feature_non_atom, items_feature_non_atom.t()))  # batch_b
-        ua = self.f(torch.mm(users_feature_atom, authors_feature_atom.t()) \
-                    + torch.mm(users_feature_non_atom, authors_feature_non_atom.t()))
+        ui = self.f(torch.mm(users_feature_atom, videos_feature_atom.t()) \
+                    + torch.mm(users_feature_non_atom, videos_feature_non_atom.t()))  # batch_b
+        ua = self.f(torch.mm(users_feature_atom, vloggers_feature_atom.t()) \
+                    + torch.mm(users_feature_non_atom, vloggers_feature_non_atom.t()))
 
-        items_feature = (items_feature_atom + items_feature_non_atom) / 2
-        authors_feature = (authors_feature_atom + authors_feature_non_atom) / 2
+        videos_feature = (videos_feature_atom + videos_feature_non_atom) / 2
+        vloggers_feature = (vloggers_feature_atom + vloggers_feature_non_atom) / 2
 
-        a = ui * torch.norm(items_feature, dim=1)  # ui*|i|
-        b = ua * torch.norm(authors_feature, dim=1)  # ua*|a|
-
-        c = torch.mm(items_feature, self.q)  # i*q
-        d = (torch.sum(c * authors_feature, 1))  # i*q*a
+        c = torch.mm(videos_feature, self.q)  # i*q
+        d = (torch.sum(c * vloggers_feature, 1))  # i*q*a
 
         weight = torch.sigmoid(d)
 
-        # rating = self.f(torch.matmul(users_emb, items_emb.t()))
 
         return weight * ui + (1 - weight) * ua
 
-        # return ui
-
-    def getEmbedding(self, users, pos_items, neg_items, pos_authors, neg_authors, users2, pos_authors2, neg_authors2,subGraph):
-        all_users, all_items, all_authors = self.computer(self.Graph[0], self.Graph[1])
-        all_users_sub1, all_items_sub1, all_authors_sub1 = self.computer(subGraph[0], subGraph[2])
-        all_users_sub2, all_items_sub2, all_authors_sub2 = self.computer(subGraph[1], subGraph[3])
-        #all_users_sub1, all_items_sub1, all_authors_sub1 = self.computer(subGraph[0], self.Graph[1])
-        #all_users_sub2, all_items_sub2, all_authors_sub2 = self.computer(subGraph[1], self.Graph[1])
-        user_embeddings1 = (all_users_sub1[0] + all_users_sub1[1]) / 2
-        user_embeddings2 = (all_users_sub2[0] + all_users_sub2[1]) / 2
-        item_embeddings1 = (all_items_sub1[0] + all_items_sub1[1]) / 2
-        item_embeddings2 = (all_items_sub2[0] + all_items_sub2[1]) / 2
-        author_embeddings1 = (all_authors_sub1[0] + all_authors_sub1[1]) / 2
-        author_embeddings2 = (all_authors_sub2[0] + all_authors_sub2[1]) / 2
+    def getEmbedding(self, users, pos_videos, neg_videos, pos_vloggers, neg_vloggers, users2, pos_vloggers2, neg_vloggers2):
+        all_users, all_videos, all_vloggers = self.computer(self.Graph[0], self.Graph[1])
 
         # train loader1
         users_emb0 = all_users[0][users]
         users_emb1 = all_users[1][users]
-        posItem_emb0 = all_items[0][pos_items]
-        posItem_emb1 = all_items[1][pos_items]
-        negItem_emb0 = all_items[0][neg_items]
-        negItem_emb1 = all_items[1][neg_items]
-        posAuthor_emb0 = all_authors[0][pos_authors]
-        posAuthor_emb1 = all_authors[1][pos_authors]
-        negAuthor_emb0 = all_authors[0][neg_authors]
-        negAuthor_emb1 = all_authors[1][neg_authors]
+        posVideo_emb0 = all_videos[0][pos_videos]
+        posVideo_emb1 = all_videos[1][pos_videos]
+        negVideo_emb0 = all_videos[0][neg_videos]
+        negVideo_emb1 = all_videos[1][neg_videos]
+        posVlogger_emb0 = all_vloggers[0][pos_vloggers]
+        posVlogger_emb1 = all_vloggers[1][pos_vloggers]
+        negVlogger_emb0 = all_vloggers[0][neg_vloggers]
+        negVlogger_emb1 = all_vloggers[1][neg_vloggers]
 
         users_emb_ego = self.embedding_user(users)
-        posItem_emb_ego = self.embedding_item(pos_items)
-        negItem_emb_ego = self.embedding_item(neg_items)
-        posAuthor_emb_ego = self.embedding_author(pos_authors)
-        negAuthor_emb_ego = self.embedding_author(neg_authors)
+        posVideo_emb_ego = self.embedding_video(pos_videos)
+        negVideo_emb_ego = self.embedding_video(neg_videos)
+        posVlogger_emb_ego = self.embedding_vlogger(pos_vloggers)
+        negVlogger_emb_ego = self.embedding_vlogger(neg_vloggers)
 
         # train loader2
         users_emb20 = all_users[0][users2]
         users_emb21 = all_users[1][users2]
-        posAuthor_emb20 = all_authors[0][pos_authors2]
-        posAuthor_emb21 = all_authors[1][pos_authors2]
-        negAuthor_emb20 = all_authors[0][neg_authors2]
-        negAuthor_emb21 = all_authors[1][neg_authors2]
+        posVlogger_emb20 = all_vloggers[0][pos_vloggers2]
+        posVlogger_emb21 = all_vloggers[1][pos_vloggers2]
+        negVlogger_emb20 = all_vloggers[0][neg_vloggers2]
+        negVlogger_emb21 = all_vloggers[1][neg_vloggers2]
 
         users_emb_ego2 = self.embedding_user(users2)
-        posAuthor_emb_ego2 = self.embedding_author(pos_authors2)
-        negAuthor_emb_ego2 = self.embedding_author(neg_authors2)
+        posVlogger_emb_ego2 = self.embedding_vlogger(pos_vloggers2)
+        negVlogger_emb_ego2 = self.embedding_vlogger(neg_vloggers2)
 
-        # Normalize embeddings learnt from sub-graph to construct SSL loss
-        user_embeddings1 = F.normalize(user_embeddings1, dim=1)
-        user_embeddings2 = F.normalize(user_embeddings2, dim=1)
-        item_embeddings1 = F.normalize(item_embeddings1, dim=1)
-        item_embeddings2 = F.normalize(item_embeddings2, dim=1)
-        author_embeddings1 = F.normalize(author_embeddings1, dim=1)
-        author_embeddings2 = F.normalize(author_embeddings2, dim=1)
+        return [users_emb0, users_emb1], [posVideo_emb0, posVideo_emb1], [negVideo_emb0, negVideo_emb1], \
+               [posVlogger_emb0, posVlogger_emb1], [negVlogger_emb0, negVlogger_emb1], \
+               users_emb_ego, posVideo_emb_ego, negVideo_emb_ego, posVlogger_emb_ego, negVlogger_emb_ego, \
+               [users_emb20, users_emb21], [posVlogger_emb20, posVlogger_emb21], [negVlogger_emb20, negVlogger_emb21], \
+               users_emb_ego2, posVlogger_emb_ego2, negVlogger_emb_ego2
 
-        user_embs1 = F.embedding(users, user_embeddings1)
-        user_embs2 = F.embedding(users, user_embeddings2)
-        item_embs1 = F.embedding(pos_items, item_embeddings1)
-        item_embs2 = F.embedding(pos_items, item_embeddings2)
-        author_embs1 = F.embedding(pos_authors, author_embeddings1)
-        author_embs2 = F.embedding(pos_authors, author_embeddings2)
+    
+    def calc_crosscl_loss(self,users_emb,posVideo_emb,posVlogger_emb):
+        p_user_emb1 = users_emb[0]
+        p_user_emb2 = users_emb[1]
+        p_video_emb1 = posVideo_emb[0]
+        p_video_emb2 = posVideo_emb[1]
+        p_vlogger_emb1 = posVlogger_emb[0]
+        p_vlogger_emb2 = posVlogger_emb[1]
 
-        pos_ratings_user = torch.sum(user_embs1*user_embs2, dim=-1) # [batch_size]
-        pos_ratings_item = torch.sum(item_embs1 * item_embs2, dim=-1)  # [batch_size]
-        pos_ratings_author = torch.sum(author_embs1 * author_embs2, dim=-1)  # [batch_size]
-        tot_ratings_user = torch.matmul(user_embs1,
-                                        torch.transpose(user_embeddings2, 0, 1))  # [batch_size, num_users]
-        tot_ratings_item = torch.matmul(item_embs1,
-                                        torch.transpose(item_embeddings2, 0, 1))  # [batch_size, num_items]
-        tot_ratings_author = torch.matmul(author_embs1,
-                                        torch.transpose(author_embeddings2, 0, 1))  # [batch_size, num_items]
+        p_user_emb1 = self.userProjection(p_user_emb1)
+        p_user_emb2 = self.userProjection(p_user_emb2)
+        p_video_emb1 = self.videoProjection(p_video_emb1)
+        p_video_emb2 = self.videoProjection(p_video_emb2)
+        p_vlogger_emb1 = self.vloggerProjection(p_vlogger_emb1)
+        p_vlogger_emb2 = self.vloggerProjection(p_vlogger_emb2)
 
-        ssl_logits_user = tot_ratings_user - pos_ratings_user[:, None]  # [batch_size, num_users]
-        ssl_logits_item = tot_ratings_item - pos_ratings_item[:, None]  # [batch_size, num_users]
-        ssl_logits_author = tot_ratings_author - pos_ratings_author[:, None]  # [batch_size, num_users]
+        # group contrast
+        normalize_emb_user1 = F.normalize(p_user_emb1, dim=1)
+        normalize_emb_user2 = F.normalize(p_user_emb2, dim=1)
+        normalize_emb_video1 = F.normalize(p_video_emb1, dim=1)
+        normalize_emb_video2 = F.normalize(p_video_emb2, dim=1)
+        normalize_emb_vlogger1 = F.normalize(p_vlogger_emb1, dim=1)
+        normalize_emb_vlogger2 = F.normalize(p_vlogger_emb2, dim=1)
 
-        return [users_emb0, users_emb1], [posItem_emb0, posItem_emb1], [negItem_emb0, negItem_emb1], \
-               [posAuthor_emb0, posAuthor_emb1], [negAuthor_emb0, negAuthor_emb1], \
-               users_emb_ego, posItem_emb_ego, negItem_emb_ego, posAuthor_emb_ego, negAuthor_emb_ego, \
-               [users_emb20, users_emb21], [posAuthor_emb20, posAuthor_emb21], [negAuthor_emb20, negAuthor_emb21], \
-               users_emb_ego2, posAuthor_emb_ego2, negAuthor_emb_ego2, \
-               ssl_logits_user,ssl_logits_item,ssl_logits_author
+        pos_score_u = torch.sum(torch.mul(normalize_emb_user1, normalize_emb_user2), dim=1)
+        pos_score_i = torch.sum(torch.mul(normalize_emb_video1, normalize_emb_video2), dim=1)
+        pos_score_a = torch.sum(torch.mul(normalize_emb_vlogger1, normalize_emb_vlogger2), dim=1)
 
-    '''
-    def getEmbedding(self, users, pos_items, neg_items, pos_authors, neg_authors,users2, pos_authors2, neg_authors2):
-        all_users, all_items, all_authors = self.computer()
-
-        #train loader1
-        users_emb0 = all_users[users]
-        posItem_emb0 = all_items[pos_items]
-        negItem_emb0 = all_items[neg_items]
-        posAuthor_emb0 = all_authors[pos_authors]
-        negAuthor_emb0 = all_authors[neg_authors]
-
-        users_emb_ego = self.embedding_user(users)
-        posItem_emb_ego = self.embedding_item(pos_items)
-        negItem_emb_ego = self.embedding_item(neg_items)
-        posAuthor_emb_ego = self.embedding_author(pos_authors)
-        negAuthor_emb_ego = self.embedding_author(neg_authors)
+        ttl_score_u = torch.matmul(normalize_emb_user1, normalize_emb_user2.T)
+        ttl_score_i = torch.matmul(normalize_emb_video1, normalize_emb_video2.T)
+        ttl_score_a = torch.matmul(normalize_emb_vlogger1, normalize_emb_vlogger2.T)
 
 
-        #train loader2
-        users_emb20 = all_users[users2]
-        posAuthor_emb20 = all_authors[pos_authors2]
-        negAuthor_emb20 = all_authors[neg_authors2]
+        if self.cl_temp<0.05:
+            ssl_logits_user = ttl_score_u - pos_score_u[:, None]  # [batch_size, num_users]
+            ssl_logits_video = ttl_score_i - pos_score_i[:, None]  # [batch_size, num_users]
+            ssl_logits_vlogger = ttl_score_a - pos_score_a[:, None]  # [batch_size, num_users]
 
+            # InfoNCE Loss
+            clogits_user = torch.mean(torch.logsumexp(ssl_logits_user / self.cl_temp, dim=1))
+            clogits_video = torch.mean(torch.logsumexp(ssl_logits_video / self.cl_temp, dim=1))
+            clogits_vlogger = torch.mean(torch.logsumexp(ssl_logits_vlogger / self.cl_temp, dim=1))
+            cl_loss = (torch.mean(clogits_user) + torch.mean(clogits_video) + torch.mean(clogits_vlogger)) / 3
+        else:
+            pos_score_u = torch.exp(pos_score_u / self.cl_temp)
+            ttl_score_u = torch.sum(torch.exp(ttl_score_u / self.cl_temp), dim=1)
+            pos_score_i = torch.exp(pos_score_i / self.cl_temp)
+            ttl_score_i = torch.sum(torch.exp(ttl_score_i / self.cl_temp), dim=1)
+            pos_score_a = torch.exp(pos_score_a / self.cl_temp)
+            ttl_score_a = torch.sum(torch.exp(ttl_score_a / self.cl_temp), dim=1)
 
-        users_emb_ego2 = self.embedding_user(users2)
-        posAuthor_emb_ego2 = self.embedding_author(pos_authors2)
-        negAuthor_emb_ego2 = self.embedding_author(neg_authors2)
+            cl_loss = (torch.mean(torch.log(pos_score_u / ttl_score_u)) + torch.mean(
+                torch.log(pos_score_i / ttl_score_i)) + torch.mean(torch.log(pos_score_a / ttl_score_a))) / 3
+        return cl_loss
 
-        return users_emb0, posItem_emb0, negItem_emb0,\
-               posAuthor_emb0,negAuthor_emb0, \
-               users_emb_ego, posItem_emb_ego, negItem_emb_ego, posAuthor_emb_ego, negAuthor_emb_ego,\
-               users_emb20, posAuthor_emb20, negAuthor_emb20, \
-               users_emb_ego2, posAuthor_emb_ego2, negAuthor_emb_ego2
+    def bpr_loss(self, users, posVideo, negVideo, posVlogger, negVlogger, users2, posVlogger2, negVlogger2):
+        (users_emb, posVideo_emb, negVideo_emb, posVlogger_emb, negVlogger_emb,
+         userEmb0, posVideoEmb0, negVideoEmb0, posVloggerEmb0, negVloggerEmb0,
+         users_emb2, posVlogger_emb2, negVlogger_emb2,
+         userEmb02, posVloggerEmb02, negVloggerEmb02
+         ) = self.getEmbedding(users.long(), posVideo.long(), negVideo.long(), posVlogger.long(), negVlogger.long(),
+                               users2.long(), posVlogger2.long(), negVlogger2.long())
 
-    '''
-
-    def bpr_loss(self, users, posItem, negItem, posAuthor, negAuthor, users2, posAuthor2, negAuthor2,subGraph):
-        (users_emb, posItem_emb, negItem_emb, posAuthor_emb, negAuthor_emb,
-         userEmb0, posItemEmb0, negItemEmb0, posAuthorEmb0, negAuthorEmb0,
-         users_emb2, posAuthor_emb2, negAuthor_emb2,
-         userEmb02, posAuthorEmb02, negAuthorEmb02,
-         ssl_logits_user, ssl_logits_item,ssl_logits_author
-         ) = self.getEmbedding(users.long(), posItem.long(), negItem.long(), posAuthor.long(), negAuthor.long(),
-                               users2.long(), posAuthor2.long(), negAuthor2.long(),subGraph)
-
-        '''
-
-        reg_loss = (1 / 2) * (userEmb0.norm(2).pow(2) +
-                              posItemEmb0.norm(2).pow(2) +
-                              negItemEmb0.norm(2).pow(2) +
-                              posAuthorEmb0.norm(2).pow(2) +
-                              negAuthorEmb0.norm(2).pow(2) +
-                              (userEmb02.norm(2).pow(2) +
-                               posAuthorEmb02.norm(2).pow(2) +
-                               negAuthorEmb02.norm(2).pow(2))
-                              ) / float(len(users))
-                              
-       
-        '''
         reg_loss = (1 / 2) * (torch.sum(torch.pow(userEmb0, 2))+
-                              torch.sum(torch.pow(posItemEmb0, 2))+
-                              torch.sum(torch.pow(negItemEmb0, 2))+
-                              torch.sum(torch.pow(posAuthorEmb0, 2))+
-                              torch.sum(torch.pow(negAuthorEmb0, 2))+
+                              torch.sum(torch.pow(posVideoEmb0, 2))+
+                              torch.sum(torch.pow(negVideoEmb0, 2))+
+                              torch.sum(torch.pow(posVloggerEmb0, 2))+
+                              torch.sum(torch.pow(negVloggerEmb0, 2))+
                               torch.sum(torch.pow(userEmb02, 2))+
-                              torch.sum(torch.pow(posAuthorEmb02, 2))+
-                              torch.sum(torch.pow(negAuthorEmb02, 2))
+                              torch.sum(torch.pow(posVloggerEmb02, 2))+
+                              torch.sum(torch.pow(negVloggerEmb02, 2))
                               )/ float(len(users))
 
-        # pos_scores = torch.mul(users_emb, pos_emb)
-        # pos_scores = torch.sum(pos_scores, dim=1)
-        ui_pos_scores = (torch.sum(users_emb[0] * posItem_emb[0], 1) \
-                         + torch.sum(users_emb[0] * posItem_emb[1], 1))
-        # neg_scores = torch.mul(users_emb, neg_emb)
-        # neg_scores = torch.sum(neg_scores, dim=1)
-        ui_neg_scores = (torch.sum(users_emb[0] * negItem_emb[0], 1) \
-                         + torch.sum(users_emb[0] * negItem_emb[1], 1))
-
-        # pos_scores2 = torch.mul(users_emb2, pos_emb2)
-        # pos_scores2 = torch.sum(pos_scores2, dim=1)
-        ua_pos_scores = (torch.sum(users_emb[0] * posAuthor_emb[0], 1) \
-                         + torch.sum(users_emb[0] * posAuthor_emb[1], 1))
-        # neg_scores2 = torch.mul(users_emb2, neg_emb2)
-        # neg_scores2 = torch.sum(neg_scores2, dim=1)
-        ua_neg_scores = (torch.sum(users_emb[0] * negAuthor_emb[0], 1) \
-                         + torch.sum(users_emb[0] * negAuthor_emb[1], 1))
-
-        ua_pos_scores2 = (torch.sum(users_emb2[0] * posAuthor_emb2[0], 1) \
-                          + torch.sum(users_emb2[0] * posAuthor_emb2[1], 1))
-        ua_neg_scores2 = (torch.sum(users_emb2[0] * negAuthor_emb2[0], 1) \
-                          + torch.sum(users_emb2[0] * negAuthor_emb2[1], 1))
+        ui_pos_scores = (torch.sum(users_emb[0] * posVideo_emb[0], 1)
+                         + torch.sum(users_emb[1] * posVideo_emb[1], 1))
+        ui_neg_scores = (torch.sum(users_emb[0] * negVideo_emb[0], 1)
+                         + torch.sum(users_emb[1] * negVideo_emb[1], 1))
+        ua_pos_scores = (torch.sum(users_emb[0] * posVlogger_emb[0], 1)
+                         + torch.sum(users_emb[1] * posVlogger_emb[1], 1))
+        ua_neg_scores = (torch.sum(users_emb[0] * negVlogger_emb[0], 1)
+                         + torch.sum(users_emb[1] * negVlogger_emb[1], 1))
+        ua_pos_scores2 = (torch.sum(users_emb2[0] * posVlogger_emb2[0], 1)
+                          + torch.sum(users_emb2[1] * posVlogger_emb2[1], 1))
+        ua_neg_scores2 = (torch.sum(users_emb2[0] * negVlogger_emb2[0], 1)
+                          + torch.sum(users_emb2[1] * negVlogger_emb2[1], 1))
 
         # pos_weight
-        items_feature = (posItem_emb[0] + posItem_emb[1]) / 2
-        authors_feature = (posAuthor_emb[0] + posAuthor_emb[1]) / 2
-        a = ui_pos_scores * torch.norm(items_feature, dim=1)  # ui*|i|
-        b = ua_pos_scores * torch.norm(authors_feature, dim=1)  # ua*|a|
+        videos_feature = (posVideo_emb[0] + posVideo_emb[1]) / 2
+        vloggers_feature = (posVlogger_emb[0] + posVlogger_emb[1]) / 2
 
-        c = torch.mm(items_feature, self.q)  # i*q
-        d = (torch.sum(c * authors_feature, 1))  # i*q*a
+        c = torch.mm(videos_feature, self.q)  # i*q
+        d = (torch.sum(c * vloggers_feature, 1))  # i*q*a
         pos_weight = torch.sigmoid(d)
 
         # neg_weight
-        items_feature = (negItem_emb[0] + negItem_emb[1]) / 2
-        authors_feature = (negAuthor_emb[0] + negAuthor_emb[1]) / 2
-        a = ui_neg_scores * torch.norm(items_feature, dim=1)  # ui*|i|
-        b = ua_neg_scores * torch.norm(authors_feature, dim=1)  # ua*|a|
+        videos_feature = (negVideo_emb[0] + negVideo_emb[1]) / 2
+        vloggers_feature = (negVlogger_emb[0] + negVlogger_emb[1]) / 2
 
-        c = torch.mm(items_feature, self.q)  # i*q
-        d = (torch.sum(c * authors_feature, 1))  # i*q*a
+        c = torch.mm(videos_feature, self.q)  # i*q
+        d = (torch.sum(c * vloggers_feature, 1))  # i*q*a
         neg_weight = torch.sigmoid(d)
 
         pos_ui_weight = pos_weight * ui_pos_scores + (1 - pos_weight) * ua_pos_scores
         neg_ui_weight = neg_weight * ui_neg_scores + (1 - neg_weight) * ua_neg_scores
 
-        #bpr_loss = 0.5 * torch.mean(
-        #    torch.nn.functional.softplus(neg_ui_weight - pos_ui_weight)) + 0.5 * torch.mean(
-        #    torch.nn.functional.softplus(ua_neg_scores2 - ua_pos_scores2))
+        bpr_loss =-torch.mean(F.logsigmoid(pos_ui_weight - neg_ui_weight)+ 10e-8) -self.vlogger_reg * torch.mean(
+            F.logsigmoid(ua_pos_scores2 - ua_neg_scores2) + 10e-8)
 
-        # 0.8 0.2 最佳
-        bpr_loss = -0.8 * torch.sum(F.logsigmoid(pos_ui_weight - neg_ui_weight)) - 0.2 * torch.sum(
-            F.logsigmoid(ua_pos_scores2 - ua_neg_scores2))
+        cl_loss=self.calc_crosscl_loss(users_emb,posVideo_emb,posVlogger_emb)
+        return bpr_loss, reg_loss, cl_loss
 
 
-        # InfoNCE Loss
-        clogits_user = torch.logsumexp(ssl_logits_user / self.ssl_temp, dim=1)
-        clogits_item = torch.logsumexp(ssl_logits_item / self.ssl_temp, dim=1)
-        clogits_author = torch.logsumexp(ssl_logits_author / self.ssl_temp, dim=1)
-        infonce_loss = torch.sum(clogits_user + clogits_item+clogits_author)
-
-        return bpr_loss, reg_loss,infonce_loss
-
-    def forward(self, users, items):
+    def forward(self, users, videos):
         # compute embedding
-        all_users, all_items, all_authors = self.computer(self.Graph[0], self.Graph[1])
+        all_users, all_videos, all_vloggers = self.computer(self.Graph[0], self.Graph[1])
         print('forward')
-        # all_users, all_items = self.computer()
+        # all_users, all_videos = self.computer()
         users_emb = all_users[users]
-        items_emb = all_items[items]
-        inner_pro = torch.mul(users_emb, items_emb)
+        videos_emb = all_videos[videos]
+        inner_pro = torch.mul(users_emb, videos_emb)
         gamma = torch.sum(inner_pro, dim=1)
         return gamma
